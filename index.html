@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MA Choropleth Maps</title>
+    <script src="libs/d3.js"></script>
+    <script src="libs/d3jstopojson.v1.js"></script>
+    <script src="https://d3js.org/colorbrewer.v1.min.js"></script>
+    <style>
+        body {
+            font-family: 'Roboto', Arial, sans-serif;
+            background-color: #f9f9f9;
+            margin: 0;
+            padding: 20px;
+        }
+        .map-title {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 10px;
+            text-align: center;
+        }
+        .map-container {
+            margin: 20px 0;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            box-shadow: 0px 2px 8px rgba(0, 0, 0, 0.1);
+            background-color: #ffffff;
+        }
+        #tooltip {
+            position: absolute;
+            opacity: 0;
+            top: 0;
+            left: 0;
+            width: auto;
+            padding: 10px;
+            background: #ffffff;
+            font-family: sans-serif;
+            font-size: medium;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            box-shadow: 0px 2px 5px rgba(0, 0, 0, 0.1);
+            line-height: 1.2;
+            pointer-events: none;
+        }
+        .line-chart {
+            width: 200px;
+            height: 120px;
+        }
+        path {
+            stroke-width: .5px;
+            stroke: black;
+            transition: stroke-width 0.2s, opacity 0.2s;
+        }
+        path:hover {
+            opacity: .6;
+            stroke: black;
+            stroke-width: 1.5px;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+    </style>
+</head>
+<body>
+    <h1 style="text-align: center;">Major Assignment-2</h1>
+    <h3 style="text-align: center;">Hrushitha Darna</h3>
+    <div id="tooltip">
+        <div id="tooltip-content"></div>
+        <svg class="line-chart"></svg>
+    </div>
+    <div class="container">
+        <div class="map-title">MAP A - Population in 1980</div>
+        <div id="mapA" class="map-container"></div>
+        <div class="map-title">MAP B - Population Change 1980-2010</div>
+        <div id="mapB" class="map-container"></div>
+        <div class="map-title">MAP C - Gini Index 2019</div>
+        <div id="mapC" class="map-container"></div>
+    </div>
+    <script>
+        const svgWidth = 800;
+        const svgHeight = 500;
+
+        const MA_counties = "data/towns.topojson";
+        const gini_index = "data/gini_index.csv";
+
+        const fipsMapping = {
+            "25001": "Barnstable County",
+            "25003": "Berkshire County",
+            "25005": "Bristol County",
+            "25007": "Dukes County",
+            "25009": "Essex County",
+            "25011": "Franklin County",
+            "25013": "Hampden County",
+            "25015": "Hampshire County",
+            "25017": "Middlesex County",
+            "25019": "Nantucket County",
+            "25021": "Norfolk County",
+            "25023": "Plymouth County",
+            "25025": "Suffolk County",
+            "25027": "Worcester County"
+        };
+
+        Promise.all([
+            d3.json(MA_counties),
+            d3.csv(gini_index)
+        ]).then(data => {
+            const topology_data = data[0];
+            const csv_data = data[1];
+
+            const giniIndexMap = {};
+            csv_data.forEach(d => {
+                const fipsCode = d['id'].replace("0500000US", "");
+                const year = d['year'];
+                const giniValue = +d['Estimate!!Gini Index'];
+                if (!giniIndexMap[fipsCode]) {
+                    giniIndexMap[fipsCode] = {};
+                }
+                giniIndexMap[fipsCode][year] = giniValue;
+            });
+
+            const geojson = topojson.feature(topology_data, topology_data.objects.ma);
+
+            geojson.features.forEach(feature => {
+                const props = feature.properties;
+                props.PopChange = (props.POP2010 || 0) - (props.POP1980 || 0);
+                const countyFips = String(props.FIPS_STCO);
+                if (giniIndexMap[countyFips]) {
+                    props.GiniIndex2019 = giniIndexMap[countyFips]["2019"] || null;
+                    props.GiniIndexYears = giniIndexMap[countyFips];
+                } else {
+                    props.GiniIndex2019 = null;
+                    props.GiniIndexYears = {};
+                }
+            });
+
+            const projection = d3.geoMercator().fitSize([svgWidth, svgHeight], geojson);
+            const pathGenerator = d3.geoPath().projection(projection);
+
+            const pop1980Color = d3.scaleSequential(d3.interpolatePuRd)
+                .domain(d3.extent(geojson.features, d => d.properties.POP1980));
+            const popChangeColor = d3.scaleSequential(d3.interpolateRdBu)
+                .domain(d3.extent(geojson.features, d => d.properties.PopChange));
+
+            const giniColor = d3.scaleSequential(d3.interpolateYlGnBu)
+                .domain([0.411, 0.547]);
+
+            function createMap(container, colorScale, valueAccessor, title, tooltipFormatter, lineChart = false) {
+                const svg = d3.select(container).append("svg")
+                    .attr("width", svgWidth)
+                    .attr("height", svgHeight);
+
+                svg.selectAll("path")
+                    .data(geojson.features)
+                    .enter().append("path")
+                    .attr("d", pathGenerator)
+                    .attr("fill", d => {
+                        const value = valueAccessor(d);
+                        return value !== null && value !== undefined ? colorScale(value) : "#000";
+                    })
+                    .on("mouseenter", (event, d) => {
+                        const fipsCode = d.properties.FIPS_STCO;
+                        d3.select("#tooltip-content").html(tooltipFormatter(d, fipsCode));
+                        d3.select("#tooltip")
+                            .style("opacity", 1)
+                            .style("left", event.pageX + "px")
+                            .style("top", event.pageY + "px");
+
+                        if (lineChart) {
+                            drawLineChart(d.properties.GiniIndexYears);
+                        } else {
+                            d3.select(".line-chart").selectAll("*").remove();
+                        }
+                    })
+                    .on("mouseleave", () => {
+                        d3.select("#tooltip").style("opacity", 0);
+                    });
+            }
+
+            function drawLineChart(data) {
+    const chartWidth = 200;
+    const chartHeight = 100;
+    const margin = { top: 10, right: 20, bottom: 30, left: 40 };
+
+    // Select the line-chart SVG and clear previous content
+    const svg = d3.select(".line-chart")
+        .attr("width", chartWidth + margin.left + margin.right)
+        .attr("height", chartHeight + margin.top + margin.bottom);
+    
+    svg.selectAll("*").remove(); // Clear existing content before adding new elements
+
+    const years = Object.keys(data).map(d => +d);
+    const values = Object.values(data);
+
+    const xScale = d3.scaleLinear().domain(d3.extent(years)).range([0, chartWidth]);
+    const yScale = d3.scaleLinear().domain(d3.extent(values)).range([chartHeight, 0]);
+
+    // Append a group element to contain the chart content
+    const chartGroup = svg.append("g")
+        .attr("transform", `translate(${margin.left},${margin.top})`);
+
+    // Add X axis
+    chartGroup.append("g")
+        .attr("transform", `translate(0,${chartHeight})`)
+        .call(d3.axisBottom(xScale).ticks(years.length).tickFormat(d3.format("d")))
+        .append("text")
+        .attr("fill", "black")
+        .attr("x", chartWidth / 2)
+        .attr("y", 25)
+        .attr("dy", "0.71em")
+        .attr("text-anchor", "middle")
+        .text("Year");
+
+    // Add Y axis
+    chartGroup.append("g")
+        .call(d3.axisLeft(yScale).ticks(5))
+        .append("text")
+        .attr("fill", "black")
+        .attr("transform", "rotate(-90)")
+        .attr("y", -35)
+        .attr("x", -chartHeight / 2)
+        .attr("dy", "0.71em")
+        .attr("text-anchor", "middle")
+        .text("Gini Index");
+
+    // Draw the line
+    const line = d3.line()
+        .x((d, i) => xScale(years[i]))
+        .y(d => yScale(d));
+
+    chartGroup.append("path")
+        .datum(values)
+        .attr("fill", "none")
+        .attr("stroke", "steelblue")
+        .attr("stroke-width", 1.5)
+        .attr("d", line);
+}
+
+            
+
+            // MAP A - Population in 1980
+            createMap("#mapA", pop1980Color, d => d.properties.POP1980, "Population in 1980", 
+                (d, fipsCode) => `<strong>County:</strong> ${fipsMapping[fipsCode] || 'Unknown'}<br>
+                                  <strong>Population 1980:</strong> ${d.properties.POP1980 || 'N/A'}`,
+                false); // No line chart for Map A
+
+            // MAP B - Population Change 1980-2010
+            createMap("#mapB", popChangeColor, d => d.properties.PopChange, "Population Change 1980-2010", 
+                (d, fipsCode) => `<strong>County:</strong> ${fipsMapping[fipsCode] || 'Unknown'}<br>
+                                  <strong>Population 1980:</strong> ${d.properties.POP1980 || 'N/A'}<br>
+                                  <strong>Population 2010:</strong> ${d.properties.POP2010 || 'N/A'}<br>
+                                  <strong>Population Change:</strong> ${d.properties.PopChange || 'N/A'}`,
+                false); // No line chart for Map B
+
+            // MAP C - Gini Index 2019
+            createMap("#mapC", giniColor, d => d.properties.GiniIndex2019, "Gini Index 2019", 
+                (d, fipsCode) => {
+                    let tooltipContent = `<strong>County:</strong> ${fipsMapping[fipsCode] || 'Unknown'}<br>`;
+                    tooltipContent += `<strong>Gini Index (2019):</strong> ${d.properties.GiniIndex2019 || 'No data available'}<br>`;
+                    
+                    tooltipContent += `<strong>Gini Index by Year:</strong><br>`;
+                    for (const [year, value] of Object.entries(d.properties.GiniIndexYears)) {
+                        tooltipContent += `&nbsp;&nbsp;${year}: ${value || 'No data available'}<br>`;
+                    }
+                    return tooltipContent;
+                },
+                true // Enable line chart for Map C
+            );
+        });
+    </script>
+</body>
+</html>
